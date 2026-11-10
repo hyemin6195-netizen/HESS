@@ -1,0 +1,430 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>H-ESS 운전 분석기</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+KR:wght@400;500;600;700&display=swap">
+<style>
+/* Layout: instrument-panel dashboard — header strip, KPI readouts, main power-flow trace with mode band, then analysis panels */
+:root{
+  --bg:#f2f5f6; --surface:#ffffff; --sunk:#e8edef; --fg:#13212a; --muted:#5a6a75; --line:#d8e0e4; --accent:#0d6b88;
+  --c-pv:#c97f00; --c-load:#5a6a75; --c-bat:#25935a; --c-elz:#2766d1; --c-fc:#8346c9; --c-idle:#b7c3ca;
+  --ok:#25935a; --warn:#c2410c; --crit:#c81e3a;
+  --f-body:"IBM Plex Sans KR","Apple SD Gothic Neo","Malgun Gothic",system-ui,sans-serif;
+  --f-mono:"IBM Plex Mono",ui-monospace,"SFMono-Regular",Consolas,monospace;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#0e161b; --surface:#152027; --sunk:#1b2830; --fg:#e3ebee; --muted:#93a3ad; --line:#24333b; --accent:#52b7d4;
+  --c-pv:#f0b13a; --c-load:#93a3ad; --c-bat:#4cc283; --c-elz:#6ea2ff; --c-fc:#b68cf2; --c-idle:#3a4a53;
+  --ok:#4cc283; --warn:#fb8b4b; --crit:#ff5e74; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0e161b; --surface:#152027; --sunk:#1b2830; --fg:#e3ebee; --muted:#93a3ad; --line:#24333b; --accent:#52b7d4;
+  --c-pv:#f0b13a; --c-load:#93a3ad; --c-bat:#4cc283; --c-elz:#6ea2ff; --c-fc:#b68cf2; --c-idle:#3a4a53;
+  --ok:#4cc283; --warn:#fb8b4b; --crit:#ff5e74; color-scheme:dark}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font-family:var(--f-body);font-size:14px;line-height:1.55}
+.wrap{max-width:1180px;margin:0 auto;padding-block:20px 48px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));display:grid;gap:16px}
+.num,.mono{font-family:var(--f-mono);font-variant-numeric:tabular-nums}
+header{display:flex;flex-wrap:wrap;gap:12px 20px;align-items:flex-end;justify-content:space-between}
+header h1{margin:0;font-size:22px;font-weight:700;letter-spacing:-.01em;text-wrap:balance}
+header p{margin:2px 0 0;color:var(--muted);font-size:13px}
+.src{display:inline-flex;align-items:center;gap:6px;font-size:12px;padding:3px 10px;border-radius:99px;background:var(--sunk);color:var(--muted);margin-top:6px}
+.src i{width:7px;height:7px;border-radius:50%;background:var(--warn);display:inline-block}
+.src.real i{background:var(--ok)}
+.actions{display:flex;flex-wrap:wrap;gap:8px}
+button,.btn{font:inherit;font-size:13px;font-weight:500;border:1px solid var(--line);background:var(--surface);color:var(--fg);padding:8px 14px;border-radius:8px;cursor:pointer}
+button:hover,.btn:hover{border-color:var(--accent)}
+button:focus-visible,.btn:focus-within,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--surface)}
+.btn input{display:none}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:16px;min-width:0}
+.panel h2{margin:0 0 2px;font-size:15px;font-weight:600}
+.panel .sub{margin:0 0 12px;color:var(--muted);font-size:12.5px}
+.kpis{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:1px;background:var(--line);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.kpi{background:var(--surface);padding:14px 14px 12px;display:grid;gap:2px;align-content:start}
+.kpi .lab{font-size:12px;color:var(--muted);display:flex;align-items:center;gap:6px}
+.kpi .lab i{width:8px;height:8px;border-radius:2px;display:inline-block}
+.kpi .val{font-family:var(--f-mono);font-size:22px;font-weight:500;font-variant-numeric:tabular-nums}
+.kpi .val small{font-size:12px;color:var(--muted);margin-left:3px}
+.kpi .note{font-size:11.5px;color:var(--muted)}
+.pill{display:inline-block;white-space:nowrap;font-size:11px;font-weight:600;padding:1px 8px;border-radius:99px}
+.pill.ok{color:var(--ok);background:color-mix(in srgb,var(--ok) 14%,transparent)}
+.pill.warn{color:var(--warn);background:color-mix(in srgb,var(--warn) 14%,transparent)}
+.pill.crit{color:var(--crit);background:color-mix(in srgb,var(--crit) 14%,transparent)}
+.chartbox{position:relative;height:300px}
+.chartbox.sm{height:220px}
+.band{display:flex;height:16px;border-radius:4px;overflow:hidden;margin-top:10px;margin-left:var(--plotL,48px);margin-right:var(--plotR,8px)}
+.band span{height:100%}
+.legend{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:12px;color:var(--muted);margin-top:8px}
+.legend b{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px}
+.grid2{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px}
+.stack{display:flex;height:26px;border-radius:6px;overflow:hidden;background:var(--sunk)}
+.stack span{height:100%;min-width:2px}
+.alloc{display:grid;gap:14px}
+.alloc h3{margin:0 0 6px;font-size:13px;font-weight:600;display:flex;justify-content:space-between;gap:8px}
+.alloc h3 .num{font-weight:400;color:var(--muted);font-size:12px}
+.rows{display:grid;grid-template-columns:auto 1fr auto auto;gap:4px 12px;font-size:12.5px;margin-top:8px;align-items:center}
+.rows b{width:9px;height:9px;border-radius:2px;display:inline-block}
+.rows .num{text-align:right}
+.rows .pct{color:var(--muted)}
+.h2calc{display:grid;gap:10px}
+.h2calc .line{display:flex;justify-content:space-between;gap:12px;border-bottom:1px dashed var(--line);padding-bottom:6px;font-size:13px}
+.h2calc label{font-size:13px;display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.h2calc input,.thr input{font:inherit;font-family:var(--f-mono);width:96px;padding:6px 8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg)}
+.result{font-size:13px;padding:10px 12px;border-radius:8px;background:var(--sunk)}
+.result .num{font-size:18px;font-weight:500}
+.formula{font-family:var(--f-mono);font-size:12px;color:var(--muted)}
+.events{max-height:260px;overflow:auto;border-top:1px solid var(--line)}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+td,th{padding:7px 6px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+th{font-weight:600;color:var(--muted);font-size:12px;position:sticky;top:0;background:var(--surface)}
+td.num{white-space:nowrap}
+.thr{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--muted);margin-bottom:10px;flex-wrap:wrap}
+.thr input{width:70px}
+pre{margin:0;padding:12px;background:var(--sunk);border-radius:8px;font-family:var(--f-mono);font-size:12px;overflow-x:auto;line-height:1.6}
+.cols{overflow-x:auto}
+.cols table td:first-child{font-family:var(--f-mono);white-space:nowrap}
+.msg{font-size:12.5px;color:var(--muted)}
+.msg.err{color:var(--crit)}
+.drop{outline:2px dashed var(--accent);outline-offset:4px}
+@media (max-width:980px){.kpis{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media (max-width:760px){.grid2{grid-template-columns:1fr}.kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.chartbox{height:250px}}
+.tabbar{display:none}
+.evm{display:none}
+@media (max-width:760px){.evm{display:inline-block;margin-right:4px}}
+section[id],div[id^="sec-"]{scroll-margin-top:12px}
+@media (max-width:760px){
+  header .actions{width:100%}
+  header .actions>*{flex:1;text-align:center;padding:12px 14px}
+  .h2calc input,.thr input{height:40px;font-size:16px}
+  .panel{padding:14px}
+  .kpi .val{font-size:20px}
+  .wrap{padding-block:16px calc(84px + env(safe-area-inset-bottom,0px))}
+  .tabbar{display:grid;grid-template-columns:repeat(5,1fr);position:fixed;left:0;right:0;bottom:0;z-index:20;background:var(--surface);border-top:1px solid var(--line);
+    padding-bottom:env(safe-area-inset-bottom,0px);padding-left:env(safe-area-inset-left,0px);padding-right:env(safe-area-inset-right,0px)}
+  .tabbar a{display:grid;justify-items:center;gap:3px;padding:8px 2px 9px;font-size:11px;color:var(--muted);text-decoration:none}
+  .tabbar a svg{width:20px;height:20px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+  .tabbar a.on{color:var(--accent);font-weight:600}
+  .ev-type{display:none}
+}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+<style>:root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}body{margin:0;font-size:14px}img{max-width:100%}[hidden]{display:none!important}</style>
+</head>
+<body>
+
+<div class="wrap" id="app"><span id="sec-top"></span>
+  <header>
+    <div>
+      <h1>H-ESS 운전 분석기</h1>
+      <p>아두이노 EMS가 MicroSD에 기록한 CSV를 올리면 전력 흐름, 수소 수지, 효율, 경보를 자동으로 계산합니다.</p>
+      <span class="src" id="srcTag"><i></i><span id="srcText">예시 데이터 (가상 시뮬레이션)</span></span>
+    </div>
+    <div class="actions">
+      <label class="btn primary" for="file">CSV 불러오기<input type="file" id="file" accept=".csv,.txt"></label>
+      <button id="sampleBtn" type="button">예시 데이터</button>
+    </div>
+  </header>
+  <div class="msg" id="msg" role="status"></div>
+
+  <section class="kpis" id="kpis" aria-label="요약"></section>
+
+  <section class="panel" id="sec-flow">
+    <h2>전력 흐름</h2>
+    <p class="sub">배터리는 충전이 +, 방전이 −입니다. 아래 띠는 시간대별 운전 모드입니다.</p>
+    <div class="chartbox"><canvas id="powerChart" aria-label="시간별 전력 흐름 그래프"></canvas></div>
+    <div class="band" id="band" aria-label="운전 모드 타임라인"></div>
+    <div class="legend" id="bandLegend"></div>
+  </section>
+
+  <div class="grid2">
+    <section class="panel">
+      <h2>에너지 배분</h2>
+      <p class="sub">발전한 에너지가 어디로 갔고, 부하는 어디서 전력을 받았는지</p>
+      <div class="alloc" id="alloc"></div>
+    </section>
+    <section class="panel" id="sec-h2">
+      <h2>수소 수지 · 패러데이 효율</h2>
+      <p class="sub">수전해 전류를 적분해 이론 수소 생성량을 계산합니다 (25 °C, 1 atm 기준)</p>
+      <div class="h2calc">
+        <div class="line"><span>수전해 누적 전하</span><span class="num" id="hQ">–</span></div>
+        <div class="line"><span>이론 수소 생성량</span><span class="num" id="hTh">–</span></div>
+        <div class="line"><span>연료전지 이론 수소 소비량</span><span class="num" id="hUse">–</span></div>
+        <label for="cells">연료전지 직렬 셀 수 <input id="cells" type="number" min="1" step="1" value="2"> 개 <span class="msg">(Double Fuel Cell = 2)</span></label>
+        <div class="formula">V<sub>H₂</sub> = (∫I dt × 셀 수 / 2F) × 24.47 L/mol</div>
+        <label for="meas">저장통 눈금으로 읽은 수소량 <input id="meas" type="number" min="0" step="1" inputmode="decimal"> mL</label>
+        <div class="result" id="fe">실측 수소량을 입력하면 패러데이 효율을 계산합니다.</div>
+      </div>
+    </section>
+  </div>
+
+  <div class="grid2">
+    <section class="panel">
+      <h2>온도</h2>
+      <div class="thr"><label for="thr">과열 경보 기준</label><input id="thr" type="number" value="45" step="1"> °C</div>
+      <div class="chartbox sm"><canvas id="tempChart" aria-label="온도 그래프"></canvas></div>
+    </section>
+    <section class="panel" id="sec-ev">
+      <h2>이벤트 기록</h2>
+      <p class="sub">모드 전환, 과열, 부하 차단을 자동으로 찾아냅니다</p>
+      <div class="events"><table><thead><tr><th>시각</th><th class="ev-type">종류</th><th>내용</th></tr></thead><tbody id="ev"></tbody></table></div>
+    </section>
+  </div>
+
+  <section class="panel" id="sec-csv">
+    <h2>CSV 형식</h2>
+    <p class="sub">첫 줄은 열 이름입니다. 순서는 상관없고, 없는 열은 0으로 처리합니다. 시간 열 이름이 <span class="mono">ms</span>나 <span class="mono">millis</span>이면 밀리초로 읽습니다.</p>
+    <div class="cols"><table>
+      <thead><tr><th>열 이름</th><th>의미</th><th>단위</th></tr></thead>
+      <tbody>
+        <tr><td>t</td><td>측정 시각 (기록 시작부터)</td><td>s</td></tr>
+        <tr><td>src_v, src_a</td><td>태양광·풍력 발전 전압, 전류</td><td>V, A</td></tr>
+        <tr><td>bat_v, bat_a</td><td>배터리 전압, 전류 (충전 +, 방전 −)</td><td>V, A</td></tr>
+        <tr><td>elz_v, elz_a</td><td>수전해 PEM 전압, 전류</td><td>V, A</td></tr>
+        <tr><td>fc_v, fc_a</td><td>연료전지 출력 전압, 전류</td><td>V, A</td></tr>
+        <tr><td>load_v, load_a</td><td>부하 전압, 전류</td><td>V, A</td></tr>
+        <tr><td>temp_fc, temp_bat</td><td>연료전지, 배터리 온도 (DS18B20)</td><td>°C</td></tr>
+      </tbody></table></div>
+    <p class="sub" style="margin-top:14px">아두이노 코드에서 첫 줄로 이 헤더를 쓰면 됩니다.</p>
+    <pre id="hdr">t,src_v,src_a,bat_v,bat_a,elz_v,elz_a,fc_v,fc_a,load_v,load_a,temp_fc,temp_bat</pre>
+    <div style="margin-top:8px"><button type="button" id="copyBtn">헤더 복사</button> <span class="msg" id="copyMsg"></span></div>
+  </section>
+</div>
+
+<nav class="tabbar" aria-label="섹션 이동">
+  <a href="#sec-top" class="on"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>요약</a>
+  <a href="#sec-flow"><svg viewBox="0 0 24 24"><path d="M3 17l5-6 4 3 5-7 4 4"/></svg>전력</a>
+  <a href="#sec-h2"><svg viewBox="0 0 24 24"><path d="M12 3c3 4 6 7.5 6 11a6 6 0 0 1-12 0c0-3.5 3-7 6-11z"/></svg>수소</a>
+  <a href="#sec-ev"><svg viewBox="0 0 24 24"><path d="M12 8v5l3 2"/><circle cx="12" cy="12" r="9"/></svg>기록</a>
+  <a href="#sec-csv"><svg viewBox="0 0 24 24"><path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5"/></svg>형식</a>
+</nav>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script>
+(function(){
+const F=96485, VM=24465; // C/mol, mL/mol at 25°C
+const COLS=['t','src_v','src_a','bat_v','bat_a','elz_v','elz_a','fc_v','fc_a','load_v','load_a','temp_fc','temp_bat'];
+const MODES={elz:'수전해 (잉여전력)',chg:'배터리 충전',dis:'배터리 방전',fc:'연료전지 발전',shed:'부하 차단',idle:'대기'};
+const MODECOL={elz:'--c-elz',chg:'--c-bat',dis:'--c-pv',fc:'--c-fc',shed:'--crit',idle:'--c-idle'};
+let data=[], isSample=true, charts={};
+const $=id=>document.getElementById(id);
+const css=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+
+/* ---------- sample data: simulated 150-min bench run, 10 s interval ---------- */
+function rng(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+function sample(){
+  const r=rng(11), dt=10, N=900, cap=0.8; let soc=0.72,h2=0,tfc=24,tbat=25,trip=0,fcRun=0,fault=0,faultDone=false,elzOn=false;
+  const out=[];
+  for(let i=0;i<N;i++){
+    const m=i*dt/60;
+    let irr=m<48?1:m<68?0.18:m<88?0.8:m<100?0.8*(100-m)/12:0;
+    let pv=irr>0?2.7*irr*(1+0.08*(r()-0.5)):0;
+    let load=1.0+0.12*(r()-0.5), charge=0, elz=0, fc=0;
+    if(trip>0)trip-=dt;
+    const sur=pv-load;
+    if(sur>=0){
+      if(soc>=0.9)elzOn=true; if(soc<0.85)elzOn=false;
+      if(elzOn){elz=Math.min(sur,1.8);charge=0}else{charge=sur}
+    }else{
+      elzOn=false;
+      if(soc>0.25){charge=sur}
+      else if(h2>5&&trip<=0){load=0.35;fc=Math.max(0,load-pv);}
+      else{load=0;}
+    }
+    soc=Math.min(1,Math.max(0,soc+charge*dt/3600/cap));
+    const ie=elz>0?(-1.9+Math.sqrt(3.61+0.6*elz))/0.3:0, ve=elz>0?1.9+0.15*ie:0;
+    h2+=ie*dt/(2*F)*VM*0.91;
+    const ifc=fc>0?(1.6-Math.sqrt(2.56-2.4*fc))/1.2:0, vfc=fc>0?1.6-0.6*ifc:0;
+    h2=Math.max(0,h2-2*ifc*dt/(2*F)*VM);
+    fcRun=fc>0?fcRun+dt:0;
+    if(fcRun>=360&&!faultDone){fault=240;faultDone=true}
+    let tgt=fc>0?38:24; if(fault>0){tgt=56;fault-=dt}
+    tfc+=(tgt-tfc)*(fc>0||fault>0?0.035:0.012)+0.15*(r()-0.5);
+    if(tfc>=45&&trip<=0&&fc>0){trip=180;fault=0}
+    tbat+=((25+Math.abs(charge)*2.2)-tbat)*0.02+0.1*(r()-0.5);
+    const sv=pv>0?5.2+0.8*irr:0, bv=3.3+0.9*soc+(charge>0?0.05:-0.05);
+    out.push({t:i*dt,src_v:sv,src_a:pv>0?pv/sv:0,bat_v:bv,bat_a:charge/bv,elz_v:ve,elz_a:ie,fc_v:vfc,fc_a:ifc,load_v:load>0?5:0,load_a:load/5,temp_fc:tfc,temp_bat:tbat});
+  }
+  return out;
+}
+
+/* ---------- CSV parsing ---------- */
+function parseCSV(text){
+  const lines=text.replace(/\r/g,'').split('\n').map(s=>s.trim()).filter(s=>s&&!s.startsWith('#'));
+  if(lines.length<3)throw new Error('데이터 행이 2개 이상 있어야 합니다.');
+  const head=lines[0].split(/[,;\t]/).map(s=>s.trim().toLowerCase());
+  const tIdx=head.findIndex(h=>['t','time','time_s','sec','s','ms','millis','time_ms'].includes(h));
+  if(tIdx<0)throw new Error('시간 열(t)을 찾지 못했습니다. 첫 줄에 열 이름이 있는지 확인해 주세요.');
+  const ms=['ms','millis','time_ms'].includes(head[tIdx]);
+  const idx={};COLS.forEach(c=>idx[c]=head.indexOf(c)); idx.t=tIdx;
+  const missing=COLS.filter(c=>c!=='t'&&idx[c]<0);
+  const rows=[];
+  for(let i=1;i<lines.length;i++){
+    const p=lines[i].split(/[,;\t]/); const o={};
+    for(const c of COLS){const v=idx[c]>=0?parseFloat(p[idx[c]]):0;o[c]=isFinite(v)?v:0}
+    if(!isFinite(parseFloat(p[tIdx])))continue;
+    if(ms)o.t/=1000; rows.push(o);
+  }
+  if(rows.length<2)throw new Error('숫자로 읽을 수 있는 행이 부족합니다.');
+  const t0=rows[0].t; rows.forEach(r=>r.t-=t0);
+  return {rows,missing};
+}
+
+/* ---------- analysis ---------- */
+function modeOf(r){
+  const ew=r.elz_v*r.elz_a, fw=r.fc_v*r.fc_a, bw=r.bat_v*r.bat_a, lw=r.load_v*r.load_a;
+  if(ew>0.05)return 'elz'; if(fw>0.05)return 'fc';
+  if(lw<0.02&&r.src_v*r.src_a<lw+0.05)return 'shed';
+  if(bw>0.02)return 'chg'; if(bw<-0.02)return 'dis'; return 'idle';
+}
+function smooth(ms){const o=ms.slice();let i=0;while(i<o.length){let j=i;while(j<o.length&&o[j]===o[i])j++;if(i>0&&j-i<3&&j<o.length)for(let k=i;k<j;k++)o[k]=o[i-1];i=j}return o}
+function analyze(rows,thr,cells){
+  const sm=smooth(rows.map(modeOf));
+  const A={pv:0,load:0,chg:0,dis:0,elz:0,fc:0,q:0,qfc:0,a_load:0,a_bat:0,a_elz:0,a_cur:0,s_pv:0,s_bat:0,s_fc:0,tmax:-Infinity,tmaxAt:0,events:[],modes:[]};
+  let prevMode=null, hot=false, prevLoad=null;
+  rows.forEach((r,i)=>{
+    const dt=i<rows.length-1?rows[i+1].t-r.t:(i>0?r.t-rows[i-1].t:0);
+    const h=dt/3600;
+    const pv=r.src_v*r.src_a, lw=r.load_v*r.load_a, bw=r.bat_v*r.bat_a, ew=r.elz_v*r.elz_a, fw=r.fc_v*r.fc_a;
+    A.pv+=pv*h;A.load+=lw*h;A.elz+=ew*h;A.fc+=fw*h;
+    if(bw>0)A.chg+=bw*h;else A.dis+=-bw*h;
+    A.q+=Math.max(0,r.elz_a)*dt;A.qfc+=Math.max(0,r.fc_a)*dt;
+    let rem=pv; const l=Math.min(rem,lw);rem-=l; const c=Math.min(rem,Math.max(bw,0));rem-=c; const e=Math.min(rem,ew);rem-=e;
+    A.a_load+=l*h;A.a_bat+=c*h;A.a_elz+=e*h;A.a_cur+=Math.max(0,rem)*h;
+    let need=lw; const sp=Math.min(need,pv);need-=sp; const sf=Math.min(need,fw);need-=sf; const sb=Math.max(0,need);
+    A.s_pv+=sp*h;A.s_fc+=sf*h;A.s_bat+=sb*h;
+    const tm=Math.max(r.temp_fc,r.temp_bat);
+    if(tm>A.tmax){A.tmax=tm;A.tmaxAt=r.t}
+    const m=sm[i]; A.modes.push(m);
+    if(m!==prevMode){
+      if(m==='shed')A.events.push({t:r.t,k:'crit',type:'부하 차단',d:'공급할 전원이 없어 부하 전력이 0이 되었습니다.'});
+      else A.events.push({t:r.t,k:'info',type:'모드 전환',d:(prevMode?MODES[prevMode]+' → ':'시작: ')+MODES[m]});
+      prevMode=m;
+    }
+    const isHot=r.temp_fc>=thr||r.temp_bat>=thr;
+    if(isHot&&!hot)A.events.push({t:r.t,k:'crit',type:'과열',d:(r.temp_fc>=thr?'연료전지 ':'배터리 ')+tm.toFixed(1)+' °C, 기준 '+thr+' °C 초과'});
+    if(!isHot&&hot)A.events.push({t:r.t,k:'ok',type:'과열 해제',d:'온도가 기준 아래로 내려왔습니다.'});
+    hot=isHot;
+  });
+  A.h2th=A.q/(2*F)*VM; A.h2use=A.qfc*cells/(2*F)*VM;
+  A.rt=(A.elz>0&&A.h2th>0&&A.h2use>0)?A.fc/(A.elz*Math.min(1,A.h2use/A.h2th)):null;
+  A.alarms=A.events.filter(e=>e.k==='crit').length;
+  A.dur=rows[rows.length-1].t;
+  return A;
+}
+
+/* ---------- rendering ---------- */
+const fmtT=s=>{s=Math.round(s);const h=Math.floor(s/3600),m=Math.floor(s%3600/60),x=s%60;return (h?h+':':'')+String(m).padStart(h?2:1,'0')+':'+String(x).padStart(2,'0')};
+const f=(v,d=2)=>isFinite(v)?v.toFixed(d):'–';
+let A;
+function render(){
+  const thr=parseFloat($('thr').value)||45;
+  const cells=Math.max(1,parseInt($('cells').value)||1);
+  A=analyze(data,thr,cells);
+  const tempState=A.tmax>=thr?['crit','경보']:A.tmax>=thr-5?['warn','주의']:['ok','정상'];
+  $('kpis').innerHTML=[
+    ['--c-pv','총 발전량',f(A.pv,2),'Wh','기록 시간 '+fmtT(A.dur)],
+    ['--c-elz','수전해 투입',f(A.elz,2),'Wh','이론 H₂ '+f(A.h2th,0)+' mL'],
+    ['--c-fc','연료전지 출력',f(A.fc*1000,0),'mWh','H₂ 소비 '+f(A.h2use,0)+' mL'],
+    ['--accent','수소 경로 왕복효율',A.rt==null?'–':f(A.rt*100,1),A.rt==null?'':'%','전기 → H₂ → 전기'],
+    ['--c-bat','배터리 충전',f(A.chg,2),'Wh','방전 '+f(A.dis,2)+' Wh'],
+    ['--warn','최고 온도',f(A.tmax,1),'°C','<span class="pill '+tempState[0]+'">'+tempState[1]+'</span> 경보 '+A.alarms+'건']
+  ].map(k=>`<div class="kpi"><div class="lab"><i style="background:var(${k[0]})"></i>${k[1]}</div><div class="val">${k[2]}<small>${k[3]}</small></div><div class="note">${k[4]}</div></div>`).join('');
+
+  // allocation
+  const bar=(items,total)=>`<div class="stack">${items.map(it=>`<span title="${it[0]}" style="width:${total>0?it[2]/total*100:0}%;background:var(${it[1]})"></span>`).join('')}</div>
+    <div class="rows">${items.map(it=>`<b style="background:var(${it[1]})"></b><span>${it[0]}</span><span class="num">${f(it[2],2)} Wh</span><span class="num pct">${total>0?f(it[2]/total*100,0):0}%</span>`).join('')}</div>`;
+  const gen=[['부하에 직접 공급','--c-load',A.a_load],['배터리 충전','--c-bat',A.a_bat],['수전해 (수소 생산)','--c-elz',A.a_elz],['미활용','--c-idle',A.a_cur]];
+  const sup=[['태양광·풍력','--c-pv',A.s_pv],['배터리','--c-bat',A.s_bat],['연료전지','--c-fc',A.s_fc]];
+  const gt=gen.reduce((s,x)=>s+x[2],0), st=sup.reduce((s,x)=>s+x[2],0);
+  $('alloc').innerHTML=`<div><h3>발전 에너지의 사용처<span class="num">${f(gt,2)} Wh</span></h3>${bar(gen,gt)}</div><div><h3>부하 전력의 공급원<span class="num">${f(st,2)} Wh</span></h3>${bar(sup,st)}</div>`;
+
+  // hydrogen
+  $('hQ').textContent=f(A.q,0)+' C';
+  $('hTh').textContent=f(A.h2th,1)+' mL';
+  $('hUse').textContent=f(A.h2use,1)+' mL';
+  updFE();
+
+  // events
+  $('ev').innerHTML=A.events.map(e=>`<tr><td class="num">${fmtT(e.t)}</td><td class="ev-type"><span class="pill ${e.k==='crit'?'crit':e.k==='ok'?'ok':''}" style="${e.k==='info'?'color:var(--muted);background:var(--sunk)':''}">${e.type}</span></td><td>${e.k!=='info'?'<span class="pill '+(e.k==='crit'?'crit':'ok')+' evm">'+e.type+'</span> ':''}${e.d}</td></tr>`).join('')||'<tr><td colspan="3">기록된 이벤트가 없습니다.</td></tr>';
+
+  drawCharts(thr);
+}
+function updFE(){
+  const v=parseFloat($('meas').value);
+  if(!isFinite(v)||v<=0||!A||A.h2th<=0){$('fe').innerHTML='실측 수소량을 입력하면 패러데이 효율을 계산합니다.';return}
+  const fe=v/A.h2th*100;
+  $('fe').innerHTML=`패러데이 효율 <span class="num">${f(fe,1)} %</span><br><span class="msg">실측 ${f(v,0)} mL ÷ 이론 ${f(A.h2th,1)} mL. ${fe>100?'100 %를 넘으면 눈금 읽기나 전류 측정 오차를 확인해 보세요.':'나머지는 기체 누설, 산소 혼입, 부반응 등으로 손실된 전하입니다.'}</span>`;
+}
+function drawBand(){
+  const n=A.modes.length, segs=[]; let s=0;
+  for(let i=1;i<=n;i++){if(i===n||A.modes[i]!==A.modes[s]){segs.push([A.modes[s],data[i===n?n-1:i].t-data[s].t]);s=i}}
+  const tot=A.dur||1;
+  $('band').innerHTML=segs.map(g=>`<span title="${MODES[g[0]]}" style="width:${g[1]/tot*100}%;background:var(${MODECOL[g[0]]})"></span>`).join('');
+  const used=[...new Set(A.modes)];
+  $('bandLegend').innerHTML=used.map(m=>`<span><b style="background:var(${MODECOL[m]})"></b>${MODES[m]}</span>`).join('');
+}
+function drawCharts(thr){
+  if(!window.Chart){$('msg').textContent='그래프 라이브러리를 불러오지 못했습니다. 숫자 요약은 정상입니다.';drawBand();return}
+  const fg=css('--muted'), grid=css('--line');
+  Chart.defaults.font.family=css('--f-mono');Chart.defaults.font.size=11;Chart.defaults.color=fg;
+  const xs=data.map(r=>r.t/60), mob=innerWidth<=760;
+  const ds=(label,col,arr,extra={})=>Object.assign({label,data:arr.map((y,i)=>({x:xs[i],y})),borderColor:css(col),backgroundColor:css(col),borderWidth:1.6,pointRadius:0,tension:0.2},extra);
+  const opts=(yt)=>({responsive:true,maintainAspectRatio:false,animation:false,interaction:{mode:'index',intersect:false},
+    plugins:{legend:{position:'top',align:'start',labels:{boxWidth:mob?8:10,boxHeight:mob?8:10,padding:mob?8:10,font:{family:css('--f-body'),size:mob?11:12}}},
+      tooltip:{callbacks:{title:it=>fmtT(it[0].parsed.x*60),label:c=>' '+c.dataset.label+': '+c.parsed.y.toFixed(2)+' '+yt}}},
+    scales:{x:{type:'linear',min:0,max:xs[xs.length-1],grid:{color:grid},title:{display:true,text:'경과 시간 (분)'},ticks:{maxTicksLimit:mob?6:10}},
+      y:{grid:{color:grid},title:{display:true,text:yt}}}});
+  Object.values(charts).forEach(c=>c.destroy());
+  charts.p=new Chart($('powerChart'),{type:'line',data:{datasets:[
+    ds('발전','--c-pv',data.map(r=>r.src_v*r.src_a),{fill:'origin',backgroundColor:css('--c-pv')+'22'}),
+    ds('부하','--c-load',data.map(r=>r.load_v*r.load_a),{borderDash:[4,3]}),
+    ds('배터리','--c-bat',data.map(r=>r.bat_v*r.bat_a)),
+    ds('수전해','--c-elz',data.map(r=>r.elz_v*r.elz_a)),
+    ds('연료전지','--c-fc',data.map(r=>r.fc_v*r.fc_a))]},options:opts('W')});
+  const thrLine=ds('경보 기준','--crit',data.map(()=>thr),{borderDash:[5,4],borderWidth:1.2});
+  charts.t=new Chart($('tempChart'),{type:'line',data:{datasets:[
+    ds('연료전지','--c-fc',data.map(r=>r.temp_fc)),ds('배터리','--c-bat',data.map(r=>r.temp_bat)),thrLine]},options:opts('°C')});
+  // align band with plot area
+  requestAnimationFrame(()=>{const a=charts.p.chartArea,w=charts.p.width;document.documentElement.style.setProperty('--plotL',a.left+'px');document.documentElement.style.setProperty('--plotR',(w-a.right)+'px')});
+  drawBand();
+}
+
+/* ---------- wiring ---------- */
+function setSource(sample,name){isSample=sample;$('srcTag').classList.toggle('real',!sample);$('srcText').textContent=sample?'예시 데이터 (가상 시뮬레이션)':name}
+function load(file){
+  const fr=new FileReader();
+  fr.onload=()=>{try{const {rows,missing}=parseCSV(String(fr.result));data=rows;setSource(false,file.name+' · '+rows.length+'행');
+      $('msg').className='msg';$('msg').textContent=missing.length?'없는 열은 0으로 처리했습니다: '+missing.join(', '):'';$('meas').value='';render()}
+    catch(e){$('msg').className='msg err';$('msg').textContent='파일을 읽지 못했습니다. '+e.message}};
+  fr.readAsText(file);
+}
+$('file').addEventListener('change',e=>{if(e.target.files[0])load(e.target.files[0]);e.target.value=''});
+const app=$('app');
+app.addEventListener('dragover',e=>{e.preventDefault();app.classList.add('drop')});
+app.addEventListener('dragleave',e=>{if(e.target===app)app.classList.remove('drop')});
+app.addEventListener('drop',e=>{e.preventDefault();app.classList.remove('drop');if(e.dataTransfer.files[0])load(e.dataTransfer.files[0])});
+$('sampleBtn').addEventListener('click',()=>{data=sample();setSource(true);$('msg').textContent='';$('meas').value='305';render()});
+$('thr').addEventListener('change',render);$('cells').addEventListener('change',render);
+$('meas').addEventListener('input',updFE);
+$('copyBtn').addEventListener('click',()=>{const t=$('hdr').textContent;
+  try{navigator.clipboard.writeText(t).then(()=>$('copyMsg').textContent='복사했습니다.',()=>sel())}catch(e){sel()}
+  function sel(){const r=document.createRange();r.selectNodeContents($('hdr'));const s=getSelection();s.removeAllRanges();s.addRange(r);$('copyMsg').textContent='선택해 두었습니다. Ctrl+C로 복사하세요.'}});
+try{matchMedia('(prefers-color-scheme: dark)').addEventListener('change',()=>render())}catch(e){}
+new MutationObserver(()=>render()).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
+let rt;addEventListener('resize',()=>{clearTimeout(rt);rt=setTimeout(()=>{if(charts.p){const a=charts.p.chartArea,w=charts.p.width;document.documentElement.style.setProperty('--plotL',a.left+'px');document.documentElement.style.setProperty('--plotR',(w-a.right)+'px')}},150)});
+
+data=sample();$('meas').value='305';render();
+// tab bar: highlight the section in view
+const tabs=[...document.querySelectorAll('.tabbar a')];
+tabs.forEach(a=>a.addEventListener('click',e=>{e.preventDefault();const t=document.querySelector(a.getAttribute('href'));if(t)t.scrollIntoView({behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth',block:'start'})}));
+function spy(){let cur=tabs[0];for(const a of tabs){const t=document.querySelector(a.getAttribute('href'));if(t&&t.getBoundingClientRect().top<innerHeight*0.4)cur=a}
+  if(innerHeight+scrollY>=document.documentElement.scrollHeight-4)cur=tabs[tabs.length-1];tabs.forEach(a=>a.classList.toggle('on',a===cur))}
+addEventListener('scroll',spy,{passive:true});spy();
+})();
+</script>
+
+</body>
+</html>
